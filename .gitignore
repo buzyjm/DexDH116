@@ -1,0 +1,56 @@
+# ==========================================
+# External pulled repositories (do not commit)
+# ==========================================
+somehand/
+AnyDexRetarget/
+
+# ==========================================
+# Environment & compiled dependencies (1.2GB)
+# ==========================================
+vendor/
+pip.pyz
+.venv/
+venv/
+env/
+
+# ==========================================
+# Legacy models & raw local assets (85MB)
+# ==========================================
+DH116_URDF_Files_2025_11_24/
+pics/
+
+# ==========================================
+# Python & Bytecode
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+# Whitelist vendor SDK libraries required by telehand/sdk.py
+!LHandProLib-API-Linux-20260727/**/lib/*.so
+
+# ==========================================
+# Local hardware and UI runtime state
+# ==========================================
+.telehand.lock
+.dexdh116.lock
+.handview_cache/
+.camera.json
+
+# ==========================================
+# Session recordings and temporary test logs
+# ==========================================
+*.log
+fk_session.csv
+fk_session.npz
+fk_session_solved.npz
+touch_events.json
+poses_yesterday.json
+
+# ==========================================
+# OS & Editor specific
+# ==========================================
+.DS_Store
+.idea/
+.vscode/
+*.swp

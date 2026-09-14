@@ -1,0 +1,31 @@
+linux用指令方式驱动CAN设备，请先用root账户测试。
+
+
+1 切换账户，以便获得设备访问权限
+su
+
+2 安装gs_usb驱动模块(系统自带，可以百度或ai搜索)
+modprobe gs_usb
+
+3 将设备ID添加到gs_usb
+echo "a8fa 8598" | sudo tee /sys/bus/usb/drivers/gs_usb/new_id
+
+4 查看can0
+ip link show
+
+5 设置并启动can0,canfd方式(采样点%75)
+ip link set can0 up type can bitrate 1000000 sample-point 0.75 dbitrate 5000000 dsample-point 0.75 fd on
+
+6 尝试发送can，canfd数据
+cansend can0 501##100025001
+
+7 尝试接收数据
+candump can0
+
+8关闭can0
+ip link set can0 down
+
+
+
+如要回到动态库方式驱动CAN设备，请先卸载gs_usb，否则打开设备失败
+modprobe -r gs_usb

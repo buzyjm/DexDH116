@@ -1,0 +1,12 @@
+# Core DexDH116 dependencies
+numpy>=1.21.0
+opencv-python>=4.5.0
+mediapipe>=0.10.0
+pyserial>=3.5
+scipy>=1.7.0
+
+# Optional 3D simulation and visualization (handview)
+mujoco>=3.0.0
+
+# Configuration parsing
+ruamel.yaml>=0.17.0
