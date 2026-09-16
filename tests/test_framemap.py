@@ -1,4 +1,4 @@
-"""Checks for telehand.framemap: mapping, fallback, smoothing, calibration.
+"""Checks for telehand.experimental.framemap: mapping, fallback, smoothing, calibration.
 
     cd ~/telehand-lat && python3 tests/test_framemap.py
 """
@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 
 from telehand import handpose as hp
-from telehand import framemap as fm
+from telehand.experimental import framemap as fm
 from telehand.hand import JointLimit
 
 failures = 0

@@ -26,3 +26,6 @@ __pycache__/
 *.log
 *.npz
 *.png
+
+# Test fixtures are tracked even though *.npz is ignored above
+!/tests/data/*.npz

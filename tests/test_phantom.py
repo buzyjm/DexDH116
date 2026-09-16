@@ -35,7 +35,7 @@ def check(cond, label):
         failures += 1
 
 
-d = np.load("/home/xu-square/telehand/fk_session.npz", allow_pickle=True)
+d = np.load(str(ROOT / "tests" / "data" / "fk_session.npz"), allow_pickle=True)
 P, LAB = d["world_pts"].astype(np.float64), d["handedness"]
 readings = [HandReading(extract_signals(p), str(l), None, p) for p, l in zip(P, LAB)]
 limits = [JointLimit(0.0, m) for m in FIRMWARE_MAX_DEG]

@@ -5,8 +5,8 @@ frame at the palm and at every joint of the chosen fingers. MediaPipe does not
 report joint rotations; everything below is reconstructed from point geometry
 only, and nothing here pretends otherwise.
 
-Scope of this version: **right hand only**, thumb and index chains, replay from
-recordings. No DH116 control is connected.
+Scope: **right hand only**. Used on the stable path by the phantom 3-D view (all five chains); the
+`run.py frames` replay defaults to thumb and index. Not used for DH116 control.
 
 ## 0. Notation
 

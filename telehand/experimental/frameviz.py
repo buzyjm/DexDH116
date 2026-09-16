@@ -19,10 +19,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from . import handpose as hp
-from .handview import view_matrix
-from .tracker import _angle_between, extract_signals, SIGNAL_NAMES
-from .viz import ViewControl, VIEW_X, VIEW_Y, VIEW_W, VIEW_H, BG, FG, MUTED
+from .. import handpose as hp
+from ..handview import view_matrix
+from ..tracker import _angle_between, extract_signals, SIGNAL_NAMES
+from ..viz import ViewControl, VIEW_X, VIEW_Y, VIEW_W, VIEW_H, BG, FG, MUTED
 
 AXIS_BGR = ((0, 0, 255), (0, 255, 0), (255, 0, 0))     # x red, y green, z blue
 IMPLAUSIBLE_MM = 30.0     # wrist-local landmark motion per frame that no hand produces

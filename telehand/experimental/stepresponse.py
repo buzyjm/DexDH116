@@ -52,8 +52,8 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-from .hand import Hand, JOINT_NAMES, NUM_JOINTS
-from .kinematics import thumb_flex_max
+from ..hand import Hand, JOINT_NAMES, NUM_JOINTS
+from ..kinematics import thumb_flex_max
 
 MOTION_DEG = 0.5          # change treated as motion rather than sensor noise
 SETTLE_DEG = 1.0

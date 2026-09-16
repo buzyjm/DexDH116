@@ -1,4 +1,15 @@
-"""Camera hand-tracking teleoperation for the LHandPro dexterous hand."""
+"""Camera hand-tracking teleoperation for the LHandPro / DH116 dexterous hand.
+
+Command-line front end. The stable pipeline run by ``teleop`` is
+
+    Camera -> HandTracker (MediaPipe) -> FKRetargeter -> Hand.write_angles
+
+with ``Hand`` applying the firmware limits, host rate limit and stall kick,
+and the phantom 3-D hand view (``--show-3d-pose``) as a side path that only
+reads the same HandReading after the command has gone out. Experimental
+subcommands and options are registered from ``telehand.experimental.cli`` and
+are imported only when used.
+"""
 
 from __future__ import annotations
 
@@ -23,10 +34,8 @@ from .fkretarget import FKRetargeter, PinchCloser
 from . import profile as _profile
 from . import direct as _direct
 from . import latency as _latency
-from . import stepresponse as _step
-from . import handpose as _hp
-from . import framemap as _framemap
 from . import phantom as _phantom
+from .experimental import cli as _exp_cli
 
 # Minimum open-to-fist separation per signal for a calibration to be usable.
 # The thumb travels far less than the fingers, so it gets a lower bar.
@@ -34,7 +43,8 @@ MIN_SEPARATION = [6.0, 12.0, 30.0, 30.0, 30.0, 30.0]
 
 
 CAMERA_BY_PATH = Path("/dev/v4l/by-path")
-CAMERA_CHOICE = Path(__file__).resolve().parents[1] / ".camera.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CAMERA_CHOICE = PROJECT_ROOT / ".camera.json"
 
 
 def saved_camera():
@@ -519,9 +529,14 @@ def cmd_teleop(args) -> int:
     closer = PinchCloser(intent_mm=intent) if (mode == "fk" and args.tactile and not args.dry_run) else None
     # Frame-based mapping (experimental). Built whenever the FK solver runs so
     # both modes log the same columns; applied only with --pose-mode frames.
+    # Experimental frame-based mapping: imported and built only when asked
+    # for, so the stable path never loads it.
     frame_mapper = pose_tracker = canon = frame_capture = frame_calib = None
     pose_log = None
+    _framemap = _hp = None
     if mode == "fk" and (args.pose_mode == "frames" or args.pose_log):
+        from .experimental import framemap as _framemap
+        from . import handpose as _hp
         frame_calib = _framemap.FrameCalibration.load(Path(args.frames_calibration))
         frame_mapper = _framemap.FrameMapper(hand.limits, frame_calib, smoothing=args.smoothing,
                                              deadband_deg=args.deadband, abd_signal=args.thumb_abd,
@@ -1296,90 +1311,102 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--all", action="store_true",
                      help="re-record every pose, not just the ones missing signals")
 
-    t = sub.add_parser("teleop", parents=[common], help="run live teleoperation")
-    t.add_argument("--dry-run", action="store_true",
-                   help="track and display but never command the hand")
-    t.add_argument("--no-home", dest="home", action="store_false", default=True,
+    t = sub.add_parser(
+        "teleop", parents=[common], help="run live teleoperation",
+        description="Live teleoperation. Recommended:\n"
+                    "  python3 run.py teleop --mode fk --smoothing 0.7 --deadband 0.4 --max-speed 300 --no-serial-flush\n"
+                    "Add --show-3d-pose for the phantom hand view. Options marked [experimental] are not "
+                    "part of the stable path.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    g = t.add_argument_group("retargeting")
+    g.add_argument("--mode", choices=["fk", "poses", "direct", "hybrid"], default="fk",
+                   help="fk: kinematic solver on fingertip geometry (default, recommended); "
+                        "poses: pose-library blend; direct: vendor-style per-joint linear map; "
+                        "hybrid: direct fingers + pose-blend thumb")
+    g.add_argument("--smoothing", type=float, default=0.35,
+                   help="EMA factor on commanded angles; lower is smoother but laggier (0.7 recommended)")
+    g.add_argument("--deadband", type=float, default=0.8,
+                   help="ignore commanded changes smaller than this, in degrees (0.4 recommended)")
+    g.add_argument("--lost-timeout-frames", type=int, default=15,
+                   help="frames without a hand before the filters reset (the last pose is held)")
+    g.add_argument("--profile", default=str(_profile.DEFAULT_PROFILE),
+                   help="fk: operator hand profile from `run.py profile`")
+    g.add_argument("--no-tactile", dest="tactile", action="store_false", default=True,
+                   help="fk: disable closing pinches by feel (thumb-tip sensor / finger stall)")
+    g.add_argument("--allow-estimates", action="store_true",
+                   help="poses: also blend poses whose robot joints are estimates, not jog-measured")
+    g.add_argument("--blend-power", type=float, default=2.5,
+                   help="poses: blending sharpness; higher snaps harder to the nearest recorded pose")
+    g.add_argument("--direct-calibration", default=str(_direct.DEFAULT_DIRECT_FILE),
+                   help="direct: per-joint ranges captured with keys 1 / 2")
+    g.add_argument("--lm-alpha", type=float, default=0.3, help="direct: landmark EMA factor")
+    g.add_argument("--lm-deadband", type=float, default=0.02,
+                   help="direct: landmark deadband in normalized units")
+    g.add_argument("--no-kalman", action="store_true", help="direct: disable the per-landmark Kalman stage")
+
+    g = t.add_argument_group("hand and safety")
+    g.add_argument("--dry-run", action="store_true",
+                   help="track and display but never command the hand (no homing, motors stay disabled)")
+    g.add_argument("--no-home", dest="home", action="store_false", default=True,
                    help="skip homing (hand must already be homed)")
-    t.add_argument("--max-speed", type=float, default=180.0,
-                   help="host-side joint rate limit, deg/s")
-    t.add_argument("--max-current", type=int, default=500,
+    g.add_argument("--max-speed", type=float, default=180.0,
+                   help="host-side joint rate limit, deg/s (300 recommended)")
+    g.add_argument("--max-current", type=int, default=500,
                    help="per-motor current limit in per-mille (1000 = full)")
-    t.add_argument("--skip-unchanged", action="store_true",
-                   help="A: only send set_target_angle for joints whose command "
-                        "moved since the last value actually sent")
-    t.add_argument("--skip-epsilon", type=float, default=0.1, metavar="DEG",
-                   help="A: how far a joint must move to be resent (default 0.1)")
-    t.add_argument("--resync-frames", type=int, default=30, metavar="N",
-                   help="A: resend every joint every N writes so a dropped RS485 "
-                        "frame cannot leave a stale target (0 disables)")
-    t.add_argument("--no-serial-flush", action="store_true",
-                   help="B: skip the vendor serial layer's flush() (tcdrain) after "
-                        "each write; patched at runtime, vendor files untouched")
-    t.add_argument("--latency-csv", default=None, metavar="PATH",
-                   help="write per-frame stage timings to this CSV "
-                        "(the p50/p95 summary prints either way)")
-    t.add_argument("--show-3d-pose", action="store_true",
-                   help="show a 3-D phantom hand beside the camera view, built from the 21 "
-                        "world landmarks; visualisation only, control path unchanged; "
-                        "p toggles, [ ] rotate the view")
-    t.add_argument("--show-joint-frames", action="store_true",
-                   help="3-D hand view: also draw the local XYZ frame of every articulated joint "
-                        "(palm largest, finger roots medium, interior joints small); f toggles")
-    t.add_argument("--pose-hz", type=float, default=30.0, metavar="HZ",
-                   help="3-D hand view refresh rate; below the camera rate the last render "
-                        "is reused (control always runs at full rate)")
-    t.add_argument("--pose-mode", choices=("scalar", "frames"), default="scalar",
-                   help="fk mode only: scalar = current FK solver for all joints (default); "
-                        "frames = thumb abduction/flexion and index flexion from the wrist-local "
-                        "frame representation, everything else and every fallback from FK")
-    t.add_argument("--thumb-abd", choices=("swing", "lift"), default="swing",
-                   help="frames: which thumb-metacarpal quantity drives abduction "
-                        "(swing = in-palm-plane angle, r=+0.96 vs the scalar; lift = out-of-plane)")
-    t.add_argument("--frames-calibration", default=str(_framemap.DEFAULT_CALIB_FILE), metavar="JSON",
-                   help="frames: open/closed ranges captured with keys 1 / 2")
-    t.add_argument("--frames-min-conf", type=float, default=0.05, metavar="C",
-                   help="frames: fall back to FK for a chain whose bone-length confidence is below this")
-    t.add_argument("--frames-history", type=int, default=300, metavar="N",
-                   help="frames: frames of bone-length history behind the confidence estimate")
-    t.add_argument("--pose-log", default=None, metavar="CSV",
-                   help="fk mode: log scalar signals, frame signals, FK vs frame commands and "
-                        "the final command every frame, in either pose mode")
-    t.add_argument("--smoothing", type=float, default=0.35,
-                   help="EMA factor, lower is smoother but laggier")
-    t.add_argument("--deadband", type=float, default=0.8,
-                   help="ignore commanded changes smaller than this, in degrees")
-    t.add_argument("--lost-timeout-frames", type=int, default=15)
-    t.add_argument("--no-stall-kick", dest="stall_kick", action="store_false", default=True,
+    g.add_argument("--no-stall-kick", dest="stall_kick", action="store_false", default=True,
                    help="disable the brief overshoot that unsticks a worm-drive joint parked short of target")
-    t.add_argument("--keep-enabled", action="store_true",
-                   help="leave the motors energized and holding on exit "
-                        "(default: de-energize so the hand goes limp)")
-    t.add_argument("--blend-power", type=float, default=2.5,
-                   help="pose blending sharpness; higher snaps harder to the "
-                        "nearest recorded pose")
-    t.add_argument("--diag", action="store_true",
-                   help="overlay nearest anchor, its normalized distance and top blend weights")
-    t.add_argument("--record", default=None, metavar="CSV",
-                   help="log per-frame signals, nearest anchor and commanded angles to CSV")
-    t.add_argument("--show-measured", action="store_true",
+    g.add_argument("--keep-enabled", action="store_true",
+                   help="leave the motors energized and holding on exit (default: de-energize)")
+    g.add_argument("--no-serial-flush", action="store_true",
+                   help="skip the vendor serial layer's tcdrain after each write (recommended: "
+                        "-27%% command latency, ordering preserved; patched at runtime)")
+
+    g = t.add_argument_group("visualisation (never touches control)")
+    g.add_argument("--show-3d-pose", action="store_true",
+                   help="phantom 3-D hand beside the camera view; key p toggles, [ ] rotate")
+    g.add_argument("--show-joint-frames", action="store_true",
+                   help="3-D hand: also draw every articulated joint's local XYZ frame; key f toggles")
+    g.add_argument("--pose-hz", type=float, default=30.0, metavar="HZ",
+                   help="3-D hand refresh rate; below the camera rate the last render is reused")
+    g.add_argument("--show-measured", action="store_true",
                    help="outline the pose the hand actually reached over the commanded one")
-    t.add_argument("--profile", default=str(_profile.DEFAULT_PROFILE),
-                   help="fk mode: operator hand profile from `run.py profile`")
-    t.add_argument("--no-tactile", dest="tactile", action="store_false", default=True,
-                   help="fk mode: disable closing pinches by feel (thumb-tip sensor / finger stall)")
-    t.add_argument("--allow-estimates", action="store_true",
-                   help="also blend poses whose robot joints are estimates, not jog-measured")
-    t.add_argument("--mode", choices=["poses", "direct", "hybrid", "fk"], default="poses",
-                   help="poses: pose-library blend (ours); direct: vendor-style "
-                        "per-joint linear map; hybrid: direct fingers + pose-blend thumb")
-    t.add_argument("--direct-calibration", default=str(_direct.DEFAULT_DIRECT_FILE))
-    t.add_argument("--lm-alpha", type=float, default=0.3,
-                   help="direct: landmark EMA factor (vendor default 0.3)")
-    t.add_argument("--lm-deadband", type=float, default=0.02,
-                   help="direct: landmark deadband in normalized units (vendor 0.02)")
-    t.add_argument("--no-kalman", action="store_true",
-                   help="direct: disable the per-landmark Kalman stage")
+    g.add_argument("--diag", action="store_true",
+                   help="overlay retargeter diagnostics on the camera view")
+
+    g = t.add_argument_group("profiling and recording")
+    g.add_argument("--latency-csv", default=None, metavar="PATH",
+                   help="write per-frame stage timings to this CSV (the p50/p95 summary prints either way)")
+    g.add_argument("--record", default=None, metavar="CSV",
+                   help="log per-frame signals and commands to CSV, and the 3-D/2-D landmarks to a "
+                        ".npz beside it (replayable by `run.py frames`)")
+
+    g = t.add_argument_group("[experimental] serial write reduction")
+    g.add_argument("--skip-unchanged", action="store_true",
+                   help="only send set_target_angle for joints whose command moved since last sent "
+                        "(measured: ~3%% latency gain, kept optional)")
+    g.add_argument("--skip-epsilon", type=float, default=0.1, metavar="DEG",
+                   help="how far a joint must move to be resent")
+    g.add_argument("--resync-frames", type=int, default=30, metavar="N",
+                   help="resend every joint every N writes so a dropped RS485 frame cannot leave a "
+                        "stale target (0 disables)")
+
+    g = t.add_argument_group("[experimental] frame-based control -- not recommended, kept for comparison")
+    g.add_argument("--pose-mode", choices=("scalar", "frames"), default="scalar",
+                   help="scalar: the FK solver for all joints (default). frames: thumb abduction/"
+                        "flexion and index flexion from the wrist-local frame representation, "
+                        "everything else and every fallback from FK (fk mode only)")
+    g.add_argument("--thumb-abd", choices=("swing", "lift"), default="swing",
+                   help="frames: thumb-metacarpal quantity driving abduction")
+    g.add_argument("--frames-calibration", default=str(PROJECT_ROOT / "frames_calibration.json"),
+                   metavar="JSON", help="frames: open/closed ranges captured with keys 1 / 2")
+    g.add_argument("--frames-min-conf", type=float, default=0.05, metavar="C",
+                   help="frames: fall back to FK below this bone-length confidence")
+    g.add_argument("--frames-history", type=int, default=300, metavar="N",
+                   help="frames: bone-length history behind the confidence estimate")
+    g.add_argument("--pose-log", default=None, metavar="CSV",
+                   help="log scalar signals, frame signals, FK vs frame commands and the final "
+                        "command every frame (builds the frame mapper even in scalar mode)")
 
     j = sub.add_parser("jog", parents=[common],
                        help="drive joints by hand to see what each one does")
@@ -1433,109 +1460,7 @@ def build_parser() -> argparse.ArgumentParser:
     pf.add_argument("--out", default=str(_profile.DEFAULT_PROFILE))
     pf.add_argument("--name", default="")
 
-    sr = sub.add_parser("stepresponse",
-
-                       help="measure the hand's real actuator response (moves the hand)")
-
-    sr.add_argument("--port", default=DEFAULT_PORT)
-
-    sr.add_argument("--baud", type=int, default=DEFAULT_BAUD)
-
-    sr.add_argument("--joints", default=None,
-
-                    help="comma-separated joint indices 0-5 (default: all)")
-
-    sr.add_argument("--speeds", default="150,200,250",
-
-                    help="set_angular_velocity values to compare")
-
-    sr.add_argument("--steps", default="20,40,80",
-
-                    help="step sizes in degrees (clamped to each joint's travel)")
-
-    sr.add_argument("--host-rate", type=float, default=300.0, metavar="DEG_S",
-                    help="host path only: write_angles rate limit, i.e. how fast the "
-                         "commanded target ramps. Teleop uses --max-speed for this "
-                         "(300 in recent runs). Does not affect the raw path.")
-    sr.add_argument("--host-hz", type=float, default=30.0, metavar="HZ",
-                    help="host path only: how often a new target is issued (teleop ~30)")
-    sr.add_argument("--drive", default="raw",
-
-                    help="raw = straight to firmware (no host rate limit, no stall "
-
-                         "kick); host = through write_angles as teleop does; "
-
-                         "'raw,host' runs both")
-
-    sr.add_argument("--compare-kick", action="store_true",
-
-                    help="repeat every host-driven step with the stall kick on and off")
-
-    sr.add_argument("--repeats", type=int, default=1)
-
-    sr.add_argument("--settle", type=float, default=1.2,
-
-                    help="seconds allowed to reach the start pose")
-
-    sr.add_argument("--window", type=float, default=2.0,
-
-                    help="seconds of response recorded after each step")
-
-    sr.add_argument("--max-current", type=int, default=500)
-
-    sr.add_argument("--no-home", dest="home", action="store_false")
-
-    sr.add_argument("--serial-flush", action="store_true",
-                    help="keep the vendor's per-write flush (slower feedback); "
-                         "off by default so the monitor thread is not throttled")
-    sr.add_argument("--traces", action="store_true",
-
-                    help="also write the full per-sample traces as JSON")
-
-    sr.add_argument("--out", default="stepresponse.csv")
-
-
-    fr = sub.add_parser("frames",
-
-
-                        help="wrist-local joint frames from a landmark recording (replay only, no hardware)")
-
-
-    fr.add_argument("--replay", required=True, metavar="NPZ",
-
-
-                    help="recording from `teleop --record` (world_pts, handedness, t)")
-
-
-    fr.add_argument("--fingers", default="thumb,index",
-
-
-                    help="which chains to reconstruct (default: thumb,index)")
-
-
-    fr.add_argument("--assume-mirrored", dest="assume_mirrored", action="store_true", default=True,
-
-
-                    help="the recording came from a mirrored webcam, so a right hand arrives as "
-
-
-                         "left geometry until the geometry itself says otherwise (default)")
-
-
-    fr.add_argument("--no-assume-mirrored", dest="assume_mirrored", action="store_false")
-
-
-    fr.add_argument("--fps", type=float, default=30.0, help="playback rate")
-    fr.add_argument("--axis-thickness", type=int, default=4, metavar="PX",
-                    help="axis arrow shaft thickness (palm gets +2); length is unchanged")
-
-
-    fr.add_argument("--no-display", action="store_true", help="metrics only, no window")
-
-
-    fr.add_argument("--out", default=None, metavar="JSON", help="write the report and per-frame log")
-
-
+    _exp_cli.add_parsers(sub)
 
     la = sub.add_parser("latency", help="summarize a latency CSV from a previous run")
 
@@ -1546,258 +1471,6 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--timeout", type=float, default=15.0,
                     help="seconds to wait for a clean shutdown before SIGTERM")
     return p
-
-
-def probe_velocity_ceiling(hand) -> dict:
-    """Ask the firmware what angular velocities it will actually accept.
-
-    set_angular_velocity is write-only from our side until read back, and the
-    value telehand has always written (150) is neither a measured ceiling nor
-    the vendor's default (200). Write a ladder, read each back, and report
-    where it stops honouring the request.
-    """
-    out = {}
-    original = None
-    try:
-        original = hand._sdk.get_angular_velocity(1)
-    except Exception:
-        pass
-    for want in (50, 100, 150, 200, 300, 400, 600, 800, 1000, 1500):
-        try:
-            hand._sdk.set_angular_velocity(0, float(want))
-            time.sleep(0.05)
-            got = float(hand._sdk.get_angular_velocity(1))
-        except Exception as exc:
-            out[want] = f"error: {type(exc).__name__}"
-            continue
-        out[want] = got
-    if original is not None:
-        hand._sdk.set_angular_velocity(0, float(original))
-    return out
-
-
-def cmd_stepresponse(args) -> int:
-    """Measure the hand's real actuator response, isolated from our software."""
-    joints = ([int(j) for j in args.joints.split(",")] if args.joints
-              else list(range(NUM_JOINTS)))
-    speeds = [float(v) for v in args.speeds.split(",")]
-    steps = [float(v) for v in args.steps.split(",")]
-
-    hand = Hand(args.port, args.baud, max_current=args.max_current,
-                stall_kick=False, max_deg_per_s=args.host_rate,
-                no_serial_flush=not args.serial_flush)
-    print("Serial flush: %s" % ("ON (vendor default - monitor will be slower)"
-                                if args.serial_flush else "BYPASSED (faster feedback)"))
-    print("Connecting to hand ...")
-    if args.home:
-        print("Homing: the hand will move through its full range. Keep it clear.")
-    hand.connect(home=args.home)
-    print("Connected.")
-    print("Firmware limits: " + ", ".join(
-        f"{JOINT_NAMES[i]} {l.min_angle:.0f}-{l.max_angle:.0f}"
-        for i, l in enumerate(hand.limits)))
-
-    results, probe = [], None
-    sampling = {}
-    try:
-        print("\nProbing the firmware's angular-velocity ceiling ...")
-        ladder = probe_velocity_ceiling(hand)
-        for want, got in ladder.items():
-            mark = "" if isinstance(got, str) or abs(got - want) < 1e-3 else "   <- clamped"
-            print(f"  set {want:>5} -> reads back {got}{mark}")
-
-        print("\nMeasuring feedback update rate (this bounds every timing below) ...")
-        samp = _step.measure_sampling(hand, seconds=2.0)
-        sampling.update(samp)
-        print(f"  polled at {samp['poll_rate_hz']:.0f} Hz; feedback changed "
-              f"{samp['update_rate_hz']:.1f} times/s")
-        if "update_interval_p50_ms" in samp:
-            print(f"  update interval: p50 {samp['update_interval_p50_ms']:.1f} ms, "
-                  f"p95 {samp['update_interval_p95_ms']:.1f} ms")
-            print(f"  => timings finer than ~{samp['update_interval_p50_ms']:.0f} ms "
-                  "are not resolvable")
-
-        probe = _step.StepProbe(hand, settle_s=args.settle, window_s=args.window,
-                                host_hz=args.host_hz)
-        if "host" in args.drive:
-            print(f"Host path: write_angles rate limit {args.host_rate:.0f} deg/s, "
-                  f"targets issued at {args.host_hz:.0f} Hz "
-                  f"({args.host_rate / args.host_hz:.1f} deg per frame)")
-        drives = args.drive.split(",")
-        kicks = [False, True] if args.compare_kick else [False]
-        total = len(joints) * len(speeds) * len(steps) * len(drives) * len(kicks) * 2 * args.repeats
-        print(f"\n{total} steps to run, about {total * (args.settle + args.window):.0f} s.\n")
-
-        n = 0
-        for j in joints:
-            lo, hi = hand.limits[j].min_angle, hand.limits[j].max_angle
-            # Velocity ascends so a failure can stop the escalation for this
-            # joint rather than repeating a fault at every higher setting.
-            capped_at = None
-            for v in sorted(speeds):
-                if capped_at is not None:
-                    print(f"  skipping {JOINT_NAMES[j]} at v={v:.0f}: "
-                          f"a step already failed at v={capped_at:.0f}")
-                    continue
-                for step in steps:
-                    span = min(step, hi - lo)
-                    for drive in drives:
-                        # The raw path never calls write_angles, so the stall
-                        # kick cannot act on it; running both would duplicate
-                        # every step for nothing.
-                        for kick in (kicks if drive == "host" else [False]):
-                            for _ in range(args.repeats):
-                                for a, b in ((lo, lo + span), (lo + span, lo)):
-                                    n += 1
-                                    r = probe.run_step(j, a, b, velocity=v, drive=drive,
-                                                       stall_kick=kick,
-                                                       max_current=args.max_current)
-                                    results.append(r)
-                                    flag = "" if r.reached else "   <- NOT REACHED"
-                                    print(f"  [{n}/{total}] {r.joint_name:<15} "
-                                          f"{r.direction:<5} {r.step_deg:>+5.0f} deg  "
-                                          f"v={v:<5.0f} {drive:<4} kick={'Y' if kick else 'n'}  "
-                                          f"upd={r.updates:>3} lag={r.cmd_lag_max:>5.1f} "
-                                          f"t90={r.t90_ms:>5.0f}ms "
-                                          f"sust={r.sustained_vel_deg_s:>5.0f}d/s "
-                                          f"err={r.final_err_deg:>+5.1f}{flag}")
-                                    if not r.reached:
-                                        print(f"       stopped at {r.stop_deg:.1f} deg ({r.stop_ms:.0f} ms)"
-                                              f" | target sent {r.target_deg:.1f}, at stop {r.target_at_stop:.1f},"
-                                              f" after {r.target_after:.1f}"
-                                              f" | status {r.status_before}->{r.status_at_stop}->{r.status_after}"
-                                              f" [{r.statuses_seen}] | reached end {r.reached_after}")
-                                        print(f"       => {r.stop_class}")
-                                        alm = probe.recover()
-                                        r.cleared = alm
-                                        probe.traces[-1]["result"]["cleared"] = alm
-                                        print(f"       recovered (alarm {'cleared' if alm else 'none'}"
-                                              f", before [{r.alarm_before}] after [{r.alarm_after}]"
-                                              + (f", during {r.alarm_during}" if r.alarm_during else "")
-                                              + f", peak current {r.peak_current:.0f}/{args.max_current})")
-                                        capped_at = v
-        print("\nReturning to open ...")
-        hand._sdk.set_angular_velocity(0, 150.0)
-        probe._goto([l.min_angle for l in hand.limits])
-    except KeyboardInterrupt:
-        print("\ninterrupted")
-    finally:
-        if results:
-            _step.save(results, probe.traces if probe else [], Path(args.out),
-                       Path(args.out).with_suffix(".traces.json") if args.traces else None)
-            print(_step.summarize(results, sampling, probe.traces if probe else None))
-            print(f"\n  {len(results)} steps -> {args.out}")
-            if args.traces:
-                print(f"  full traces -> {Path(args.out).with_suffix('.traces.json')}")
-        hand.disconnect()
-        print("Disconnected.")
-    return 0
-
-
-def cmd_frames(args) -> int:
-    """Reconstruct wrist-local joint frames from a landmark recording and check them.
-
-    Replay only for now: no camera, no motors. The recording is what
-    `teleop --record` writes (world_pts, handedness, t).
-    """
-    import cv2
-    from . import handpose as _hp
-    from . import frameviz as _fv
-
-    d = np.load(args.replay, allow_pickle=True)
-    if "world_pts" not in d.files:
-        print(f"ERROR: {args.replay} has no world_pts (record with `teleop --record`)", file=sys.stderr)
-        return 1
-    P = d["world_pts"].astype(np.float64)
-    labels = d["handedness"] if "handedness" in d.files else np.array(["?"] * len(P))
-    T = d["t"] if "t" in d.files else np.arange(len(P)) / 30.0
-    fingers = tuple(f.strip() for f in args.fingers.split(",") if f.strip())
-
-    canon = _hp.Canonicalizer(assume_mirrored=args.assume_mirrored)
-    tracker = _hp.HandPoseTracker(fingers)
-    stats = _fv.FrameStats(fingers)
-    counts = dict(zip(*np.unique(labels, return_counts=True)))
-    print(f"replay {args.replay}: {len(P)} frames, labels {counts}, fingers {fingers}")
-    print("canonicalization: geometry decides when a finger is curled; continuity otherwise; "
-          f"default {'LEFT geometry (mirrored webcam)' if args.assume_mirrored else 'RIGHT'} until then. "
-          "Labels are counted, never applied.")
-
-    display = not args.no_display
-    view = None
-    if display:
-        view = _fv.FrameView()
-        cv2.namedWindow("frames")
-        view.attach("frames")
-        print("keys: space pause, n step, hjkl/r/drag orbit, wheel zoom, q quit")
-    per_frame = []            # (i, label, source, vote, chirality, palm jump deg)
-    prev_R = None
-    i = 0
-    paused = False
-    try:
-        while i < len(P):
-            pts = canon(P[i], str(labels[i]))
-            pose = tracker.update(pts, int(float(T[i]) * 1000))
-            stats.add(pose, pts, invariance_test=(i % 10 == 0))
-            jump = _fv.geodesic_deg(prev_R, pose.wrist_rotation) if prev_R is not None else 0.0
-            prev_R = pose.wrist_rotation
-            per_frame.append((i, str(labels[i]), canon.last_source, canon.last_vote,
-                              canon.chirality, jump))
-            if display:
-                while True:
-                    lines = [f"frame {i + 1}/{len(P)}   t={float(T[i]):.2f}s   {'PAUSED' if paused else ''}",
-                             f"label {labels[i]}  chirality {'L' if canon.chirality < 0 else 'R'} "
-                             f"by {canon.last_source} (vote {canon.last_vote:+.0f})",
-                             f"palm jump {jump:5.2f} deg   sign margin {pose.sign_margin:.3f}   "
-                             f"planarity {pose.planarity:.3f}",
-                             ""]
-                    for n in _hp.joint_names(fingers):
-                        j = pose.joints[n]
-                        if n == "palm":
-                            lines.append(f"{n:<11} conf {j.confidence:.2f}")
-                        elif not n.endswith("_tip"):
-                            rv = pose.relative_rotvec(n)
-                            lines.append(f"{n:<11} conf {j.confidence:.2f}  bend {pose.bend_angle_deg(n):5.1f}"
-                                         f"  rotvec [{rv[0]:+6.1f} {rv[1]:+6.1f} {rv[2]:+6.1f}]")
-                    canvas = _fv.render_replay(pose, lines, axis_thickness=args.axis_thickness,
-                                               **view.kwargs)
-                    cv2.imshow("frames", canvas)
-                    key = cv2.waitKey(max(1, int(1000 / args.fps)) if not paused else 30) & 0xFF
-                    if key in (ord("q"), 27):
-                        raise KeyboardInterrupt
-                    if key == ord(" "):
-                        paused = not paused
-                    elif view.handle_key(key):
-                        pass
-                    if not paused or key == ord("n"):
-                        break
-            i += 1
-    except KeyboardInterrupt:
-        print("\nstopped at frame", i)
-    finally:
-        if display:
-            cv2.destroyAllWindows()
-
-    report = stats.report()
-    print(_fv.format_report(report))
-    c = canon.counts
-    print()
-    print(f"canonicalization over {len(per_frame)} frames: geometry {c['geometry']}, continuity "
-          f"{c['continuity']}, default {c['default']}; chirality switches {c['switches']}; "
-          f"label disagreed with the decision in {c['label_disagreements']} frames")
-    dis = [f for f in per_frame if f[1] not in ("?", "") and
-           ((f[1].lower().startswith("l")) != (f[4] < 0))]
-    if dis:
-        print("  frames where the LABEL disagreed (idx, label, decided by, vote, palm jump vs previous frame):")
-        for f in dis[:12]:
-            print(f"    {f[0]:>5}  {f[1]:<6} {f[2]:<11} {f[3]:+7.0f}   {f[5]:6.2f} deg")
-    big = [f for f in per_frame if f[5] > 45.0]
-    print(f"  palm-frame jumps over 45 deg: {len(big)}" + (f"  at frames {[f[0] for f in big[:10]]}" if big else ""))
-    if args.out:
-        import json
-        Path(args.out).write_text(json.dumps({"report": report, "canonicalization": c,
-                                              "per_frame": per_frame}, default=float, indent=1))
-        print(f"  written: {args.out}")
-    return 0
 
 
 def cmd_latency(args) -> int:
@@ -1817,9 +1490,9 @@ def main(argv=None) -> int:
                 "touchscan": cmd_touchscan, "photostep": cmd_photostep,
                 "profile": cmd_profile, "handview": cmd_handview,
                 "cameras": cmd_cameras, "latency": cmd_latency,
-                "stepresponse": cmd_stepresponse, "frames": cmd_frames}
+                **_exp_cli.HANDLERS}
     try:
-        if args.command in ("stop", "handview", "cameras", "latency", "frames"):
+        if args.command in ("stop", "handview", "cameras", "latency") + _exp_cli.NO_HARDWARE:
             return handlers[args.command](args)
         with session.hold(args.command, port=getattr(args, "port", None),
                           camera=getattr(args, "camera", None)):

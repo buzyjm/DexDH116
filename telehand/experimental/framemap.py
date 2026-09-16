@@ -42,7 +42,7 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-from . import handpose as hp
+from .. import handpose as hp
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CALIB_FILE = PROJECT_ROOT / "frames_calibration.json"
