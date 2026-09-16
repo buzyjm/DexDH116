@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+
+# Symlinks to the large read-only assets in the original project (see README)
+/vendor
+/models
+/LHandProLib-API-Linux-20260727
+/DH116_URDF_MJCF_Files
+/DH116_URDF_Files_2025_11_24
+
+# Per-machine / per-session state
+/.telehand.lock
+/.camera.json
+/.handview_view.json
+/.handview_cache/
+/calibration.json
+/direct_calibration.json
+/frames_calibration.json
+/handprofile*.json
+
+# Generated outputs: benchmark CSVs, traces, logs, recordings, screenshots
+/data/
+*.csv
+*.traces.json
+*.log
+*.npz
+*.png
