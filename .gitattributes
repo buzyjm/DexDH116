@@ -1,0 +1,21 @@
+* text=auto eol=lf
+
+*.py text
+*.md text
+*.json text
+*.yaml text
+*.toml text
+
+*.STL binary
+*.stl binary
+*.so binary
+*.a binary
+*.npz binary
+*.task binary
+*.pdf binary
+*.jpeg binary
+*.jpg binary
+*.png binary
+
+# Vendor packages are stored exactly as shipped, CRLF and all.
+third_party/** -text

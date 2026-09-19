@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Project-local dependencies and the tool that installs them (README: Setup)
+/vendor/
+/scripts/pip.pyz
+
+# Runtime state written by the CLI: camera choice, view angle, mesh cache, lock
+/.telehand/
+
+# Per-operator calibration; calibration/poses.json is per hand and is kept
+/calibration/handprofile*.json
+/calibration/direct_calibration.json
+
+# Editors
+.vscode/
+.idea/
+
+# Sibling projects are independent git clones with their own history and local
+# DH116 adaptations; they are not part of this repository (see README).
+/somehand/
+/AnyDexRetarget/
+
+# Superseded vendor package: same geometry as DH116_URDF_MJCF_Files, unused
+/third_party/DH116_URDF_Files_2025_11_24/

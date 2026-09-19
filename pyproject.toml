@@ -1,0 +1,35 @@
+[project]
+name = "telehand"
+version = "0.1.0"
+description = "Camera-driven teleoperation for the LHandPro DH116 dexterous hand"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "mediapipe>=1.0",
+    "pyserial",
+]
+
+[project.optional-dependencies]
+# MuJoCo-rendered hand view; the convex-hull fallback needs nothing extra.
+render = ["mujoco>=3.0", "glfw", "PyOpenGL"]
+dev = ["ruff", "pyflakes"]
+
+[project.scripts]
+telehand = "telehand.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["telehand", "telehand.commands"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["vendor", "third_party", "somehand", "AnyDexRetarget"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
